@@ -4,25 +4,61 @@ void main() {
   runApp(const VetCalcApp());
 }
 
-class VetCalcApp extends StatelessWidget {
+class VetCalcApp extends StatefulWidget {
   const VetCalcApp({super.key});
+
+  @override
+  State<VetCalcApp> createState() => _VetCalcAppState();
+}
+
+class _VetCalcAppState extends State<VetCalcApp> {
+  bool _isDarkMode = false;
+
+  void _toggleTheme() {
+    setState(() {
+      _isDarkMode = !_isDarkMode;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Cálculo de Dosis Vet',
+      themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
         primarySwatch: Colors.teal,
         useMaterial3: true,
+        brightness: Brightness.light,
       ),
-      home: const DosageCalculatorScreen(),
+      darkTheme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: Colors.black, // Negro puro AMOLED
+        canvasColor: Colors.black,
+        cardColor: const Color(0xFF121212), // Gris ultra oscuro para tarjetas (contraste perfecto)
+        colorScheme: const ColorScheme.dark(
+          primary: Colors.tealAccent,
+          surface: Colors.black,
+        ),
+        useMaterial3: true,
+      ),
+      home: DosageCalculatorScreen(
+        isDarkMode: _isDarkMode,
+        onToggleTheme: _toggleTheme,
+      ),
     );
   }
 }
 
 class DosageCalculatorScreen extends StatefulWidget {
-  const DosageCalculatorScreen({super.key});
+  final bool isDarkMode;
+  final VoidCallback onToggleTheme;
+
+  const DosageCalculatorScreen({
+    super.key,
+    required this.isDarkMode,
+    required this.onToggleTheme,
+  });
 
   @override
   State<DosageCalculatorScreen> createState() => _DosageCalculatorScreenState();
@@ -48,11 +84,17 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
     super.dispose();
   }
 
+  // Función auxiliar para parsear valores reemplazando comas por puntos de forma segura
+  double? _parseFlexibleDouble(String value) {
+    final normalized = value.trim().replaceAll(',', '.');
+    return double.tryParse(normalized);
+  }
+
   void _calculateDose() {
     if (_formKey.currentState!.validate()) {
-      final double weight = double.parse(_weightController.text);
-      final double inputDose = double.parse(_doseController.text);
-      final double concentration = double.parse(_concentrationController.text);
+      final double weight = _parseFlexibleDouble(_weightController.text) ?? 0.0;
+      final double inputDose = _parseFlexibleDouble(_doseController.text) ?? 0.0;
+      final double concentration = _parseFlexibleDouble(_concentrationController.text) ?? 1.0;
 
       setState(() {
         if (_isMicrograms) {
@@ -60,7 +102,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
         } else {
           _totalDoseMg = weight * inputDose;
         }
-        _volumeMl = _totalDoseMg! / concentration;
+        _volumeMl = concentration > 0 ? _totalDoseMg! / concentration : 0.0;
       });
     }
   }
@@ -90,9 +132,14 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cálculo de Dosis Vet'),
-        backgroundColor: Colors.teal,
+        backgroundColor: widget.isDarkMode ? Colors.black : Colors.teal,
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode),
+            onPressed: widget.onToggleTheme,
+            tooltip: widget.isDarkMode ? 'Cambiar a Modo Claro' : 'Cambiar a Modo Oscuro AMOLED',
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _resetFields,
@@ -113,7 +160,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   width: double.infinity,
                   margin: const EdgeInsets.only(bottom: 20.0),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFC1EBEB),
+                    color: widget.isDarkMode ? const Color(0xFF1E2929) : const Color(0xFFC1EBEB),
                     borderRadius: BorderRadius.circular(12.0),
                   ),
                   child: ClipRRect(
@@ -134,7 +181,8 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   ),
                   validator: (value) {
                     if (value == null || value.isEmpty) return 'Ingrese el peso';
-                    if (double.tryParse(value) == null || double.parse(value) <= 0) return 'Peso no válido';
+                    final parsed = _parseFlexibleDouble(value);
+                    if (parsed == null || parsed <= 0) return 'Peso no válido';
                     return null;
                   },
                 ),
@@ -154,7 +202,8 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         ),
                         validator: (value) {
                           if (value == null || value.isEmpty) return 'Ingrese la dosis';
-                          if (double.tryParse(value) == null || double.parse(value) <= 0) return 'Dosis no válida';
+                          final parsed = _parseFlexibleDouble(value);
+                          if (parsed == null || parsed <= 0) return 'Dosis no válida';
                           return null;
                         },
                       ),
@@ -175,12 +224,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                               'mg',
                               style: TextStyle(
                                 fontWeight: !_isMicrograms ? FontWeight.bold : FontWeight.normal,
-                                color: !_isMicrograms ? Colors.teal : Colors.grey,
+                                color: !_isMicrograms ? (widget.isDarkMode ? Colors.tealAccent : Colors.teal) : Colors.grey,
                               ),
                             ),
                             Switch(
                               value: _isMicrograms,
-                              activeThumbColor: Colors.teal,
+                              activeThumbColor: widget.isDarkMode ? Colors.black : Colors.teal,
                               onChanged: (value) {
                                 setState(() {
                                   _isMicrograms = value;
@@ -191,7 +240,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                               'mcg',
                               style: TextStyle(
                                 fontWeight: _isMicrograms ? FontWeight.bold : FontWeight.normal,
-                                color: _isMicrograms ? Colors.teal : Colors.grey,
+                                color: _isMicrograms ? (widget.isDarkMode ? Colors.tealAccent : Colors.teal) : Colors.grey,
                               ),
                             ),
                           ],
@@ -211,7 +260,8 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   ),
                   validator: (value) {
                     if (value == null || value.isEmpty) return 'Ingrese la concentración';
-                    if (double.tryParse(value) == null || double.parse(value) <= 0) return 'Concentración no válida';
+                    final parsed = _parseFlexibleDouble(value);
+                    if (parsed == null || parsed <= 0) return 'Concentración no válida';
                     return null;
                   },
                 ),
@@ -219,8 +269,8 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                 ElevatedButton(
                   onPressed: _calculateDose,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal,
-                    foregroundColor: Colors.white,
+                    backgroundColor: widget.isDarkMode ? Colors.tealAccent : Colors.teal,
+                    foregroundColor: widget.isDarkMode ? Colors.black : Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16.0),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
                   ),
@@ -230,30 +280,70 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                 if (_volumeMl != null && _totalDoseMg != null)
                   Card(
                     elevation: 4.0,
-                    color: Colors.teal.shade50,
+                    color: widget.isDarkMode ? const Color(0xFF1E2929) : Colors.teal.shade50,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
                     child: Padding(
                       padding: const EdgeInsets.all(20.0),
                       child: Column(
                         children: [
-                          const Text(
+                          Text(
                             'VOLUMEN A ADMINISTRAR',
-                            style: TextStyle(fontSize: 14.0, fontWeight: FontWeight.bold, color: Colors.teal),
+                            style: TextStyle(
+                              fontSize: 14.0,
+                              fontWeight: FontWeight.bold,
+                              color: widget.isDarkMode ? Colors.tealAccent : Colors.teal,
+                            ),
                           ),
                           const SizedBox(height: 8.0),
                           Text(
                             '${_volumeMl!.toStringAsFixed(3)} ml',
-                            style: const TextStyle(fontSize: 36.0, fontWeight: FontWeight.bold, color: Colors.black87),
+                            style: TextStyle(
+                              fontSize: 36.0,
+                              fontWeight: FontWeight.bold,
+                              color: widget.isDarkMode ? Colors.white : Colors.black87,
+                            ),
                           ),
                           const Divider(height: 30.0),
                           Text(
                             _getDoseResultText(),
-                            style: const TextStyle(fontSize: 16.0, color: Colors.black54),
+                            style: TextStyle(
+                              fontSize: 16.0,
+                              color: widget.isDarkMode ? Colors.white70 : Colors.black54,
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
+                const SizedBox(height: 32.0),
+                // Footer con la frase y diseño profesional/humorístico
+                Center(
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Eres médico, no carnicero.',
+                        style: TextStyle(
+                          fontSize: 15.0,
+                          fontWeight: FontWeight.w600,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                      const SizedBox(height: 6.0),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(width: 30, height: 1, color: Colors.grey.shade400),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 8.0),
+                            child: Text('🐾', style: TextStyle(fontSize: 14.0)),
+                          ),
+                          Container(width: 30, height: 1, color: Colors.grey.shade400),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16.0),
               ],
             ),
           ),
