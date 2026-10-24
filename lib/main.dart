@@ -67,6 +67,25 @@ class DosageCalculatorScreen extends StatefulWidget {
 enum ConcentrationType { mgPerMl, grams, percentage }
 enum FluidType { ringerLactate, normalSaline, dextroseSaline, custom }
 
+// Modelos seguros para resultados clínicos
+class ResultadoDosis {
+  final double mgTotales;
+  final double volumenMl;
+  ResultadoDosis(this.mgTotales, this.volumenMl);
+}
+
+class ResultadoFluidoterapia {
+  final double totalFluid24h;
+  final double fluidRateMlHour;
+  final double dropsPerMin;
+  ResultadoFluidoterapia(this.totalFluid24h, this.fluidRateMlHour, this.dropsPerMin);
+}
+
+class ResultadoCri {
+  final double criDrugVolumeMl;
+  ResultadoCri(this.criDrugVolumeMl);
+}
+
 class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
   int _currentIndex = 0;
 
@@ -78,12 +97,14 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
   final TextEditingController _weightController = TextEditingController();
   final TextEditingController _doseController = TextEditingController();
   final TextEditingController _concentrationController = TextEditingController();
+  final TextEditingController _bottleVolumeController = TextEditingController(text: '100');
 
   bool _isMicrograms = false;
   ConcentrationType _selectedConcentrationType = ConcentrationType.mgPerMl;
-  double? _volumeMl;
-  double? _totalDoseMg;
+
+  ResultadoDosis? _resultadoDosis;
   double? _finalMgPerMl;
+  String? _alertaExtrema;
 
   // ------------------ PESTAÑA FLUIDOTERAPIA ------------------
   final GlobalKey<FormState> _fluidsFormKey = GlobalKey<FormState>();
@@ -93,9 +114,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
 
   FluidType _selectedFluidType = FluidType.ringerLactate;
   int _dropFactor = 20;
-  double? _totalFluid24h;
-  double? _fluidRateMlHour;
-  double? _dropsPerMin;
+  ResultadoFluidoterapia? _resultadoFluidoterapia;
 
   // ------------------ PESTAÑA CRI ------------------
   final GlobalKey<FormState> _criFormKey = GlobalKey<FormState>();
@@ -106,7 +125,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
   final TextEditingController _criInfusionRateController = TextEditingController(text: '10');
 
   bool _criIsMicrogramsPerMin = false;
-  double? _criDrugVolumeMl;
+  ResultadoCri? _resultadoCri;
 
   // ------------------ PESTAÑA VADEMÉCUM ------------------
   final TextEditingController _searchVademecumController = TextEditingController();
@@ -183,6 +202,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
     _weightController.dispose();
     _doseController.dispose();
     _concentrationController.dispose();
+    _bottleVolumeController.dispose();
     _fluidWeightController.dispose();
     _dehydrationController.dispose();
     _maintenanceController.dispose();
@@ -200,74 +220,166 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
     return double.tryParse(normalized);
   }
 
+  // 🛡️ Motor de cálculo de Dosis blindado
+  ResultadoDosis? _calcularVolumenSeguro({
+    required double pesoKg,
+    required double dosisMgKg,
+    required double concentracionMgMl,
+  }) {
+    final valores = [pesoKg, dosisMgKg, concentracionMgMl];
+    if (valores.any((v) => v.isNaN || v.isInfinite || v <= 0)) return null;
+
+    final mgTotales = pesoKg * dosisMgKg;
+    final volumenMl = mgTotales / concentracionMgMl;
+    if (volumenMl.isNaN || volumenMl.isInfinite) return null;
+
+    return ResultadoDosis(mgTotales, volumenMl);
+  }
+
   void _calculateDose() {
     if (_dosageFormKey.currentState!.validate()) {
-      final double weight = _parseFlexibleDouble(_weightController.text) ?? 0.0;
-      final double inputDose = _parseFlexibleDouble(_doseController.text) ?? 0.0;
-      final double rawConcentration = _parseFlexibleDouble(_concentrationController.text) ?? 1.0;
+      final double? weight = _parseFlexibleDouble(_weightController.text);
+      final double? inputDose = _parseFlexibleDouble(_doseController.text);
+      final double? rawConcentration = _parseFlexibleDouble(_concentrationController.text);
+
+      if (weight == null || inputDose == null || rawConcentration == null) return;
+
+      final double doseEnMgKg = _isMicrograms ? inputDose / 1000.0 : inputDose;
+
+      double tempMgPerMl = 0.0;
+      switch (_selectedConcentrationType) {
+        case ConcentrationType.mgPerMl:
+          tempMgPerMl = rawConcentration;
+          break;
+        case ConcentrationType.grams:
+          final double? bottleVolMl = _parseFlexibleDouble(_bottleVolumeController.text);
+          if (bottleVolMl == null || bottleVolMl <= 0) return;
+          tempMgPerMl = (rawConcentration * 1000.0) / bottleVolMl;
+          break;
+        case ConcentrationType.percentage:
+          tempMgPerMl = rawConcentration * 10.0;
+          break;
+      }
+
+      final resultado = _calcularVolumenSeguro(
+        pesoKg: weight,
+        dosisMgKg: doseEnMgKg,
+        concentracionMgMl: tempMgPerMl,
+      );
 
       setState(() {
-        if (_isMicrograms) {
-          _totalDoseMg = (weight * inputDose) / 1000.0;
-        } else {
-          _totalDoseMg = weight * inputDose;
-        }
+        _finalMgPerMl = tempMgPerMl;
+        _resultadoDosis = resultado;
+        _alertaExtrema = null;
 
-        switch (_selectedConcentrationType) {
-          case ConcentrationType.mgPerMl:
-            _finalMgPerMl = rawConcentration;
-            break;
-          case ConcentrationType.grams:
-            _finalMgPerMl = rawConcentration * 1000.0;
-            break;
-          case ConcentrationType.percentage:
-            _finalMgPerMl = rawConcentration * 10.0;
-            break;
+        if (resultado != null) {
+          if (weight > 150.0) {
+            _alertaExtrema = "⚠️ Advertencia: El peso ($weight kg) es inusualmente alto. ¿Verificó que no esté en libras?";
+          } else if (resultado.volumenMl > 20.0) {
+            _alertaExtrema = "⚠️ Precaución: El volumen resultante (${resultado.volumenMl.toStringAsFixed(2)} mL) es elevado para una sola aplicación convencional.";
+          }
         }
-
-        _volumeMl = (_finalMgPerMl != null && _finalMgPerMl! > 0)
-            ? _totalDoseMg! / _finalMgPerMl!
-            : 0.0;
       });
     }
+  }
+
+  // 🛡️ Motor de cálculo de Fluidoterapia blindado
+  ResultadoFluidoterapia? _calcularFluidosSeguro({
+    required double pesoKg,
+    required double dehydrationPct,
+    required double maintenanceMlKg,
+    required int dropFactor,
+  }) {
+    if (pesoKg.isNaN || pesoKg.isInfinite || pesoKg <= 0) return null;
+    if (dehydrationPct.isNaN || dehydrationPct.isInfinite || dehydrationPct < 0) return null;
+    if (maintenanceMlKg.isNaN || maintenanceMlKg.isInfinite || maintenanceMlKg <= 0) return null;
+    if (dropFactor <= 0) return null;
+
+    final double deficitMl = pesoKg * dehydrationPct * 10.0;
+    final double maintenanceMl = pesoKg * maintenanceMlKg;
+    final double totalFluid24h = deficitMl + maintenanceMl;
+    final double fluidRateMlHour = totalFluid24h / 24.0;
+    final double dropsPerMin = (fluidRateMlHour * dropFactor) / 60.0;
+
+    if (totalFluid24h.isNaN || totalFluid24h.isInfinite || fluidRateMlHour.isInfinite || dropsPerMin.isInfinite) {
+      return null;
+    }
+
+    return ResultadoFluidoterapia(totalFluid24h, fluidRateMlHour, dropsPerMin);
   }
 
   void _calculateFluids() {
     if (_fluidsFormKey.currentState!.validate()) {
-      final double weight = _parseFlexibleDouble(_fluidWeightController.text) ?? 0.0;
-      final double dehydrationPct = _parseFlexibleDouble(_dehydrationController.text) ?? 0.0;
-      final double maintenanceMlKg = _parseFlexibleDouble(_maintenanceController.text) ?? 50.0;
+      final double? weight = _parseFlexibleDouble(_fluidWeightController.text);
+      final double? dehydrationPct = _parseFlexibleDouble(_dehydrationController.text);
+      final double? maintenanceMlKg = _parseFlexibleDouble(_maintenanceController.text);
+
+      if (weight == null || dehydrationPct == null || maintenanceMlKg == null) return;
+
+      final resultado = _calcularFluidosSeguro(
+        pesoKg: weight,
+        dehydrationPct: dehydrationPct,
+        maintenanceMlKg: maintenanceMlKg,
+        dropFactor: _dropFactor,
+      );
 
       setState(() {
-        final double deficitMl = weight * dehydrationPct * 10.0;
-        final double maintenanceMl = weight * maintenanceMlKg;
-
-        _totalFluid24h = deficitMl + maintenanceMl;
-        _fluidRateMlHour = _totalFluid24h! / 24.0;
-        _dropsPerMin = (_fluidRateMlHour! * _dropFactor) / 60.0;
+        _resultadoFluidoterapia = resultado;
       });
     }
   }
 
+  // 🛡️ Motor de cálculo de CRI blindado
+  ResultadoCri? _calcularCriSeguro({
+    required double pesoKg,
+    required double dose,
+    required double drugConcMgMl,
+    required double bagVolMl,
+    required double infusionRateMlH,
+    required bool isMicrogramsPerMin,
+  }) {
+    final valores = [pesoKg, dose, drugConcMgMl, bagVolMl, infusionRateMlH];
+    if (valores.any((v) => v.isNaN || v.isInfinite || v <= 0)) return null;
+
+    double mgPerHour = 0.0;
+    if (isMicrogramsPerMin) {
+      mgPerHour = (dose * pesoKg * 60.0) / 1000.0;
+    } else {
+      mgPerHour = dose * pesoKg;
+    }
+
+    final double hoursBagLasts = bagVolMl / infusionRateMlH;
+    final double totalMgNeededInBag = mgPerHour * hoursBagLasts;
+    final double criDrugVolumeMl = totalMgNeededInBag / drugConcMgMl;
+
+    if (criDrugVolumeMl.isNaN || criDrugVolumeMl.isInfinite) return null;
+
+    return ResultadoCri(criDrugVolumeMl);
+  }
+
   void _calculateCri() {
     if (_criFormKey.currentState!.validate()) {
-      final double weight = _parseFlexibleDouble(_criWeightController.text) ?? 0.0;
-      final double dose = _parseFlexibleDouble(_criDoseController.text) ?? 0.0;
-      final double drugConcMgMl = _parseFlexibleDouble(_criConcController.text) ?? 1.0;
-      final double bagVolMl = _parseFlexibleDouble(_criBagVolumeController.text) ?? 500.0;
-      final double infusionRateMlH = _parseFlexibleDouble(_criInfusionRateController.text) ?? 10.0;
+      final double? weight = _parseFlexibleDouble(_criWeightController.text);
+      final double? dose = _parseFlexibleDouble(_criDoseController.text);
+      final double? drugConcMgMl = _parseFlexibleDouble(_criConcController.text);
+      final double? bagVolMl = _parseFlexibleDouble(_criBagVolumeController.text);
+      final double? infusionRateMlH = _parseFlexibleDouble(_criInfusionRateController.text);
+
+      if (weight == null || dose == null || drugConcMgMl == null || bagVolMl == null || infusionRateMlH == null) {
+        return;
+      }
+
+      final resultado = _calcularCriSeguro(
+        pesoKg: weight,
+        dose: dose,
+        drugConcMgMl: drugConcMgMl,
+        bagVolMl: bagVolMl,
+        infusionRateMlH: infusionRateMlH,
+        isMicrogramsPerMin: _criIsMicrogramsPerMin,
+      );
 
       setState(() {
-        double mgPerHour = 0.0;
-        if (_criIsMicrogramsPerMin) {
-          mgPerHour = (dose * weight * 60.0) / 1000.0;
-        } else {
-          mgPerHour = dose * weight;
-        }
-
-        final double hoursBagLasts = bagVolMl / infusionRateMlH;
-        final double totalMgNeededInBag = mgPerHour * hoursBagLasts;
-        _criDrugVolumeMl = totalMgNeededInBag / drugConcMgMl;
+        _resultadoCri = resultado;
       });
     }
   }
@@ -277,22 +389,21 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
       _weightController.clear();
       _doseController.clear();
       _concentrationController.clear();
-      _volumeMl = null;
-      _totalDoseMg = null;
+      _bottleVolumeController.text = '100';
+      _resultadoDosis = null;
       _finalMgPerMl = null;
+      _alertaExtrema = null;
       _isMicrograms = false;
       _selectedConcentrationType = ConcentrationType.mgPerMl;
 
       _fluidWeightController.clear();
       _dehydrationController.clear();
-      _totalFluid24h = null;
-      _fluidRateMlHour = null;
-      _dropsPerMin = null;
+      _resultadoFluidoterapia = null;
 
       _criWeightController.clear();
       _criDoseController.clear();
       _criConcController.clear();
-      _criDrugVolumeMl = null;
+      _resultadoCri = null;
     });
   }
 
@@ -301,7 +412,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
       case ConcentrationType.mgPerMl:
         return 'Concentración del frasco (mg/mL)';
       case ConcentrationType.grams:
-        return 'Concentración en gramos (g)';
+        return 'Cantidad total en el frasco (g)';
       case ConcentrationType.percentage:
         return 'Concentración en porcentaje (%)';
     }
@@ -323,11 +434,11 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
   String _getFluidClinicalNote(FluidType type) {
     switch (type) {
       case FluidType.ringerLactate:
-        return '• Indicado: Cristaloides de elección (cirugía, deshidratación general, acidosis leve).\n• Precaución: Evitar en insuficiencia hepática grave o hipercalcemia.';
+        return '• Indicado: Cristaloides de elección (cirugía, deshidratación general, acidosis leve).\nPrecaución: Evitar en insuficiencia hepática grave o hipercalcemia.';
       case FluidType.normalSaline:
-        return '• Indicado: Alcalosis metabólica, hipercalcemia, traumatismo craneoencefálico.\n• Precaución: Riesgo de acidosis hiperclorémica en infusiones masivas.';
+        return '• Indicado: Alcalosis metabólica, hipercalcemia, traumatismo craneoencefálico.\nPrecaución: Riesgo de acidosis hiperclorémica en infusiones masivas.';
       case FluidType.dextroseSaline:
-        return '• Indicado: Neonatos, pacientes pediátricos, hipoglucemia o sepsis.\n• Precaución: No administrar en bolos rápidos.';
+        return '• Indicado: Neonatos, pacientes pediátricos, hipoglucemia o sepsis.\nPrecaución: No administrar en bolos rápidos.';
       case FluidType.custom:
         return '• Evaluar osmolaridad y compatibilidad con electrolitos agregados.';
     }
@@ -782,6 +893,26 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   return null;
                 },
               ),
+              if (_selectedConcentrationType == ConcentrationType.grams) ...[
+                const SizedBox(height: 16.0),
+                TextFormField(
+                  controller: _bottleVolumeController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: 'Volumen total de dilución del frasco (mL)',
+                    prefixIcon: const Icon(Icons.water),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
+                    hintText: 'Ej. 100 mL o 50 mL',
+                  ),
+                  validator: (value) {
+                    if (_selectedConcentrationType != ConcentrationType.grams) return null;
+                    if (value == null || value.isEmpty) return 'Ingrese el volumen del frasco';
+                    final parsed = _parseFlexibleDouble(value);
+                    if (parsed == null || parsed <= 0) return 'Volumen no válido';
+                    return null;
+                  },
+                ),
+              ],
               const SizedBox(height: 24.0),
               ElevatedButton(
                 onPressed: _calculateDose,
@@ -794,7 +925,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                 child: const Text('CALCULAR DOSIS', style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(height: 24.0),
-              if (_volumeMl != null && _totalDoseMg != null)
+              if (_resultadoDosis != null)
                 Card(
                   elevation: 4.0,
                   color: widget.isDarkMode ? const Color(0xFF1E2929) : Colors.teal.shade50,
@@ -815,11 +946,28 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                           ),
                         ),
                         const Divider(height: 20.0),
-                        Text('• Dosis total requerida: ${_totalDoseMg!.toStringAsFixed(2)} mg'),
+                        Text('• Dosis total requerida: ${_resultadoDosis!.mgTotales.toStringAsFixed(2)} mg'),
                         if (_selectedConcentrationType == ConcentrationType.grams)
-                          const Text('• Conversión aplicada: g × 1000 = mg'),
+                          Text('• Conversión aplicada: (${_concentrationController.text} g × 1000) ÷ ${_bottleVolumeController.text} mL = ${_finalMgPerMl!.toStringAsFixed(1)} mg/mL'),
                         if (_selectedConcentrationType == ConcentrationType.percentage)
                           Text('• Conversión aplicada: ${_concentrationController.text}% × 10 = ${_finalMgPerMl!.toStringAsFixed(1)} mg/mL'),
+
+                        if (_alertaExtrema != null) ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.amber),
+                            ),
+                            child: Text(
+                              _alertaExtrema!,
+                              style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 12.5),
+                            ),
+                          ),
+                        ],
+
                         const SizedBox(height: 12.0),
                         Center(
                           child: Column(
@@ -829,7 +977,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                                 style: TextStyle(fontSize: 12.0, color: Colors.grey),
                               ),
                               Text(
-                                '${_volumeMl!.toStringAsFixed(3)} mL',
+                                '${_resultadoDosis!.volumenMl.toStringAsFixed(3)} mL',
                                 style: TextStyle(
                                   fontSize: 36.0,
                                   fontWeight: FontWeight.bold,
@@ -956,7 +1104,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   prefixIcon: const Icon(Icons.fitness_center),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                 ),
-                validator: (val) => (val == null || val.isEmpty) ? 'Ingrese el peso' : null,
+                validator: (val) {
+                  if (val == null || val.isEmpty) return 'Ingrese el peso';
+                  final parsed = _parseFlexibleDouble(val);
+                  if (parsed == null || parsed <= 0) return 'Peso no válido';
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               TextFormField(
@@ -966,9 +1119,14 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   labelText: 'Deshidratación estimada (%)',
                   prefixIcon: const Icon(Icons.invert_colors),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
-                  hintText: 'Ej. 5, 8 o 10',
+                  hintText: 'Ej. 0, 5, u 10',
                 ),
-                validator: (val) => (val == null || val.isEmpty) ? 'Ingrese el % de deshidratación' : null,
+                validator: (val) {
+                  if (val == null || val.isEmpty) return 'Ingrese el % de deshidratación';
+                  final parsed = _parseFlexibleDouble(val);
+                  if (parsed == null || parsed < 0) return 'Valor no válido';
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               TextFormField(
@@ -979,7 +1137,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   prefixIcon: const Icon(Icons.timer),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                 ),
-                validator: (val) => (val == null || val.isEmpty) ? 'Ingrese la tasa' : null,
+                validator: (val) {
+                  if (val == null || val.isEmpty) return 'Ingrese la tasa';
+                  final parsed = _parseFlexibleDouble(val);
+                  if (parsed == null || parsed <= 0) return 'Tasa no válida';
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               InputDecorator(
@@ -1019,7 +1182,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                 child: const Text('CALCULAR FLUIDOS', style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(height: 24),
-              if (_totalFluid24h != null)
+              if (_resultadoFluidoterapia != null)
                 Card(
                   elevation: 4.0,
                   color: widget.isDarkMode ? const Color(0xFF1E2929) : Colors.teal.shade50,
@@ -1042,8 +1205,8 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         const Divider(height: 20.0),
                         Text('• Solución: ${_getFluidTypeName(_selectedFluidType)}', style: const TextStyle(fontWeight: FontWeight.bold)),
                         const SizedBox(height: 4),
-                        Text('• Volumen total 24h: ${_totalFluid24h!.toStringAsFixed(1)} mL'),
-                        Text('• Velocidad requerida: ${_fluidRateMlHour!.toStringAsFixed(1)} mL/h'),
+                        Text('• Volumen total 24h: ${_resultadoFluidoterapia!.totalFluid24h.toStringAsFixed(1)} mL'),
+                        Text('• Velocidad requerida: ${_resultadoFluidoterapia!.fluidRateMlHour.toStringAsFixed(1)} mL/h'),
                         const SizedBox(height: 12),
                         Container(
                           padding: const EdgeInsets.all(10),
@@ -1062,7 +1225,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                             children: [
                               const Text('VELOCIDAD DE GOTEO', style: TextStyle(fontSize: 12.0, color: Colors.grey)),
                               Text(
-                                '${_dropsPerMin!.toStringAsFixed(0)} gtt/min',
+                                '${_resultadoFluidoterapia!.dropsPerMin.toStringAsFixed(0)} gtt/min',
                                 style: TextStyle(
                                   fontSize: 34.0,
                                   fontWeight: FontWeight.bold,
@@ -1070,7 +1233,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                                 ),
                               ),
                               Text(
-                                '(Aproximadamente 1 gota cada ${(60 / _dropsPerMin!).toStringAsFixed(1)} segundos)',
+                                '(Aproximadamente 1 gota cada ${(60 / _resultadoFluidoterapia!.dropsPerMin).toStringAsFixed(1)} segundos)',
                                 style: const TextStyle(fontSize: 12.0, fontStyle: FontStyle.italic, color: Colors.grey),
                               ),
                             ],
@@ -1126,7 +1289,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   prefixIcon: const Icon(Icons.fitness_center),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                 ),
-                validator: (val) => (val == null || val.isEmpty) ? 'Ingrese el peso' : null,
+                validator: (val) {
+                  if (val == null || val.isEmpty) return 'Ingrese el peso';
+                  final parsed = _parseFlexibleDouble(val);
+                  if (parsed == null || parsed <= 0) return 'Peso no válido';
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               Row(
@@ -1142,7 +1310,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         prefixIcon: const Icon(Icons.speed),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                       ),
-                      validator: (val) => (val == null || val.isEmpty) ? 'Ingrese la dosis' : null,
+                      validator: (val) {
+                        if (val == null || val.isEmpty) return 'Ingrese la dosis';
+                        final parsed = _parseFlexibleDouble(val);
+                        if (parsed == null || parsed <= 0) return 'Dosis no válida';
+                        return null;
+                      },
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -1178,7 +1351,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                   prefixIcon: const Icon(Icons.science),
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                 ),
-                validator: (val) => (val == null || val.isEmpty) ? 'Ingrese la concentración' : null,
+                validator: (val) {
+                  if (val == null || val.isEmpty) return 'Ingrese la concentración';
+                  final parsed = _parseFlexibleDouble(val);
+                  if (parsed == null || parsed <= 0) return 'Concentración no válida';
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               Row(
@@ -1192,7 +1370,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         prefixIcon: const Icon(Icons.local_hospital_outlined),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                       ),
-                      validator: (val) => (val == null || val.isEmpty) ? 'Requerido' : null,
+                      validator: (val) {
+                        if (val == null || val.isEmpty) return 'Requerido';
+                        final parsed = _parseFlexibleDouble(val);
+                        if (parsed == null || parsed <= 0) return 'Valor no válido';
+                        return null;
+                      },
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1205,7 +1388,12 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         prefixIcon: const Icon(Icons.play_arrow),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
                       ),
-                      validator: (val) => (val == null || val.isEmpty) ? 'Requerido' : null,
+                      validator: (val) {
+                        if (val == null || val.isEmpty) return 'Requerido';
+                        final parsed = _parseFlexibleDouble(val);
+                        if (parsed == null || parsed <= 0) return 'Valor no válido';
+                        return null;
+                      },
                     ),
                   ),
                 ],
@@ -1222,7 +1410,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                 child: const Text('CALCULAR ADICIÓN DE FÁRMACO', style: TextStyle(fontSize: 15.0, fontWeight: FontWeight.bold)),
               ),
               const SizedBox(height: 24),
-              if (_criDrugVolumeMl != null)
+              if (_resultadoCri != null)
                 Card(
                   elevation: 4.0,
                   color: widget.isDarkMode ? const Color(0xFF1E2929) : Colors.teal.shade50,
@@ -1242,7 +1430,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          '${_criDrugVolumeMl!.toStringAsFixed(2)} mL',
+                          '${_resultadoCri!.criDrugVolumeMl.toStringAsFixed(2)} mL',
                           style: TextStyle(
                             fontSize: 36.0,
                             fontWeight: FontWeight.bold,
@@ -1251,7 +1439,7 @@ class _DosageCalculatorScreenState extends State<DosageCalculatorScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          'Extraer ${_criDrugVolumeMl!.toStringAsFixed(2)} mL del fármaco y mezclar en la bolsa de ${_criBagVolumeController.text} mL.',
+                          'Extraer ${_resultadoCri!.criDrugVolumeMl.toStringAsFixed(2)} mL del fármaco y mezclar en la bolsa de ${_criBagVolumeController.text} mL.',
                           textAlign: TextAlign.center,
                           style: const TextStyle(fontSize: 13.0, color: Colors.grey),
                         ),
